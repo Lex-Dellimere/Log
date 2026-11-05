@@ -134,7 +134,7 @@ a control character. Keys with those bytes get `_` in their place.
 | `log_sink_journal(tag)` | `/run/systemd/journal/socket` |
 | `log_sink_unix(path, kind, tag)` | datagrams to a Unix socket |
 | `log_sink_memory(kind, flags)` | in memory; `log_sink_text(s)` and `log_sink_clear(s)` |
-| `log_sink_callback(fn(rawptr, LogRecord*) -> int32, ctx)` | records, unformatted |
+| `log_sink_callback(fn(rawptr, LogRecord*) -> int32 with alloc, syscall, ctx)` | records, unformatted |
 | `log_sink_new(kind, flags)` | a bare sink: set `write` and `ctx` for your own writer |
 | `log_sink_level(s, level)` | this sink skips records below level |
 | `log_sink_async(s, capacity, policy) -> bool` | write from a background thread; `LOG_BLOCK` or `LOG_DROP` |
@@ -145,6 +145,10 @@ a control character. Keys with those bytes get `_` in their place.
 
 File and socket sinks return 0 when they cannot be opened.
 
-A writer is `fn(ctx: rawptr, bytes: uint8*, n: int64) -> int64`. It must be
+A writer is `fn(ctx: rawptr, bytes: uint8*, n: int64) -> int64 with alloc,
+syscall`, a callback `fn(rawptr, LogRecord*) -> int32 with alloc, syscall`.
+These effect clauses close the calls, so every log call can run inside code
+that declares `with alloc, syscall` (alph actors and offload jobs). A writer
+or callback may not use `asm` or any other effect. A writer must be
 safe to call from several threads at once unless the sink is async (then
 only the writer thread calls it).

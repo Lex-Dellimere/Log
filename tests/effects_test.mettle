@@ -1,0 +1,43 @@
+// log called from a closed function type, as alph actors and offload jobs
+// call it: `with alloc, syscall` must be enough for every log call.
+import "std/thread";
+import "log/log";
+import "tutil";
+
+struct Job {
+  run: fn(rawptr, int64) -> int64 with alloc, syscall;
+}
+
+var g_mem: LogSink* = (LogSink*)0;
+var g_records: int32 = 0;
+
+fn on_rec(ctx: rawptr, r: LogRecord*) -> int32 with alloc, syscall {
+  g_records = g_records + 1;
+  return 0;
+}
+
+fn handler(ctx: rawptr, n: int64) -> int64 with alloc, syscall {
+  var lg: LogLogger* = log_logger("job");
+  var child: LogLogger* = log_with(lg, log_str("job", "j1"));
+  if (log_on(child, LOG_DEBUG)) { log_debug(child, "debug", log_int("n", n)); }
+  log_info(child, "ran", log_int("n", n), log_f64("x", 0.5), log_bool("ok", true));
+  log_at(child, LOG_WARN, "warn", log_dur("took", n));
+  log_flush();
+  return n + 1;
+}
+
+fn main() -> int32 {
+  g_mem = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  log_sink_async(g_mem, 64, LOG_BLOCK);
+  log_add_sink(g_mem);
+  log_add_sink(log_sink_callback(&on_rec, (rawptr)0));
+  log_set_filter("debug");
+  var j: Job;
+  j.run = &handler;
+  t_ok("handler result", j.run((rawptr)0, (int64)41) == 42);
+  t_eq("records", log_sink_text(g_mem),
+    "level=debug target=job msg=debug job=j1 n=41\nlevel=info target=job msg=ran job=j1 n=41 x=0.5 ok=true\nlevel=warn target=job msg=warn job=j1 took=41ns\n");
+  t_ok("callback saw 3", g_records == 3);
+  log_shutdown();
+  return t_done("effects");
+}

@@ -5,7 +5,7 @@
 import "mbuild/api";
 
 fn project() {
-  mb_package("log", "0.1.0");
+  mb_package("log", "0.1.1");
   mb_meta("description", "structured logging for Mettle: levels, fields, RUST_LOG-style filters, async sinks, rotation, JSON, logfmt, syslog and journald");
   mb_meta("license", "Apache-2.0");
   mb_meta("repository", "https://github.com/Lex-Dellimere/Log");

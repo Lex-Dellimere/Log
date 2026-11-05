@@ -53,13 +53,13 @@ export struct LogQueue {
 export struct LogSink {
   level: int32;
   fmt: LogFormat;
-  write: fn(rawptr, uint8*, int64) -> int64;
+  write: fn(rawptr, uint8*, int64) -> int64 with alloc, syscall;
   ctx: rawptr;
-  on_record: fn(rawptr, LogRecord*) -> int32;   // set: gets records, not bytes
+  on_record: fn(rawptr, LogRecord*) -> int32 with alloc, syscall;   // set: gets records, not bytes
   packet: bool;                                 // each record is one datagram: never batch
   queue: LogQueue*;
   thread: int64;                                // writer thread of an async sink
-  closer: fn(rawptr) -> int32;
+  closer: fn(rawptr) -> int32 with alloc, syscall;
 }
 
 // ---- atomics (std/thread has 32-bit ones) ----------------------------------
@@ -385,7 +385,7 @@ export fn log_sink_journal(tag: string) -> LogSink* {
 
 // Calls cb with each record, unformatted, on the logging thread. The record
 // and everything in it are borrowed for the call.
-export fn log_sink_callback(cb: fn(rawptr, LogRecord*) -> int32, ctx: rawptr) -> LogSink* {
+export fn log_sink_callback(cb: fn(rawptr, LogRecord*) -> int32 with alloc, syscall, ctx: rawptr) -> LogSink* {
   var s: LogSink* = log_sink_new(LOG_FMT_TEXT, 0);
   s->on_record = cb;
   s->ctx = ctx;
