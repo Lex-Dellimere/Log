@@ -1,0 +1,47 @@
+// File sinks: appending, size rotation with numbered backups.
+import "std/file";
+import "std/dir";
+import "std/mem";
+import "log/log";
+import "tutil";
+
+fn size_of(path: string) -> int64 {
+  var fd: int64 = file_open(path, FILE_READ);
+  if (fd < 0) { return -1; }
+  var n: int64 = file_size(fd);
+  file_close(fd);
+  return n;
+}
+
+fn main() -> int32 {
+  dir_create("build");
+  var base: string = "build/log_test_rot.log";
+  file_remove(base);
+  for i in 1..5 {
+    var p: string = base + ".{i}";
+    file_remove(p);
+  }
+  // Each record is 49 bytes, so 10 fit in 500: "level=info target=f msg=r i=NNNN pad=xxxxxxxxxxx\n".
+  var s: LogSink* = log_sink_file(base, LOG_FMT_LOGFMT, LOG_NO_TIME, 500, 3);
+  t_ok("opened", s != 0);
+  log_add_sink(s);
+  log_set_filter("info");
+  var lg: LogLogger* = log_logger("f");
+  for i in 1000..1100 { log_info(lg, "r", log_int("i", (int64)i), log_str("pad", "xxxxxxxxxxx")); }
+  log_shutdown();
+  t_ok("current size", size_of(base) == 490);
+  t_ok("backup 1", size_of(base + ".1") == 490);
+  t_ok("backup 3", size_of(base + ".3") == 490);
+  t_ok("no backup 4", size_of(base + ".4") < 0);
+  // The newest records are in the current file, the oldest kept in .3.
+  var fd: int64 = file_open(base, FILE_READ);
+  var buf: uint8[64];
+  file_read_at(fd, &buf[0], 49, 441);
+  file_close(fd);
+  var last: string;
+  last.chars = &buf[0];
+  last.length = 49;
+  t_eq("last record", last, "level=info target=f msg=r i=1099 pad=xxxxxxxxxxx\n");
+  t_ok("missing dir fails", log_sink_file("build/no/such/dir/x.log", LOG_FMT_TEXT, 0, 0, 0) == 0);
+  return t_done("file");
+}

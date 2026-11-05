@@ -1,0 +1,100 @@
+// Many threads logging into async sinks: nothing lost with LOG_BLOCK, every
+// record counted with LOG_DROP, lines never torn.
+import "std/io";
+import "std/thread";
+import "std/conv";
+import "log/log";
+import "tutil";
+
+const THREADS = 8;
+const EACH = 5000;
+
+var g_lg: LogLogger* = (LogLogger*)0;
+
+fn find(s: string, needle: string) -> int64 {
+  return match (str_find(s, needle)) { case Some(k): k, case None: (int64)-1 };
+}
+
+fn worker(arg: cstring) -> uint32 {
+  var id: int64 = (int64)arg;
+  for i in 0..EACH {
+    log_info(g_lg, "tick", log_int("t", id), log_int("i", (int64)i), log_str("pad", "abcdefghijklmnopqrstuvwxyz"));
+  }
+  return 0;
+}
+
+fn run_threads() {
+  var hs: int64[8];
+  for t in 0..THREADS { hs[t] = CreateThread(0, 0, &worker, (cstring)(int64)t, 0, 0); }
+  for t in 0..THREADS { thread_join_infinite(hs[t]); thread_close(hs[t]); }
+}
+
+// Every line is whole and every (thread, index) pair appears once.
+fn check_lines(text: string, want: int64) -> int64 {
+  var seen: bool[] = new bool[THREADS * EACH];
+  var pos: int64 = 0;
+  var lines: int64 = 0;
+  var good: bool = true;
+  while (pos < (int64)text.length) {
+    var end: int64 = pos;
+    while (end < (int64)text.length && text[end] != '\n') { end = end + 1; }
+    var line: string = str_slice(text, pos, end - pos);
+    pos = end + 1;
+    if (str_contains(line, "dropped=")) { continue; }
+    lines = lines + 1;
+    if (!str_starts_with(line, "level=info target=w msg=tick t=") || !str_ends_with(line, " pad=abcdefghijklmnopqrstuvwxyz")) {
+      good = false;
+      continue;
+    }
+    var t: int64 = (int64)line[31] - 48;
+    var rest: string = str_slice(line, 35, (int64)line.length - 35);
+    var sp: int64 = find(rest, " ");
+    var i: int64 = str_to_i64_or(str_slice(rest, 0, sp), -1);
+    if (t < 0 || t >= THREADS || i < 0 || i >= EACH) { good = false; continue; }
+    if (seen[t * EACH + i]) { good = false; }
+    seen[t * EACH + i] = true;
+  }
+  t_ok("lines whole and unique", good);
+  if (want >= 0) { t_ok("line count {lines} == {want}", lines == want); }
+  return lines;
+}
+
+fn main() -> int32 {
+  log_set_filter("info");
+  g_lg = log_logger("w");
+
+  var blk: LogSink* = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  t_ok("async block", log_sink_async(blk, 64, LOG_BLOCK));
+  var drp: LogSink* = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  t_ok("async drop", log_sink_async(drp, 16, LOG_DROP));
+  var syn: LogSink* = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  t_ok("twice refused", !log_sink_async(blk, 64, LOG_BLOCK));
+  log_add_sink(blk);
+  log_add_sink(drp);
+  log_add_sink(syn);
+
+  run_threads();
+  log_flush();
+  var total: int64 = (int64)THREADS * (int64)EACH;
+  check_lines(log_sink_text(blk), total);
+  check_lines(log_sink_text(syn), total);
+  log_shutdown();     // writes the last drop report
+  var got: int64 = check_lines(log_sink_text(drp), -1);
+  // Sum the dropped= reports.
+  var text: string = log_sink_text(drp);
+  var dropped: int64 = 0;
+  var at: int64 = 0;
+  while (true) {
+    var rest: string = str_slice(text, at, (int64)text.length - at);
+    var k: int64 = find(rest, "dropped=");
+    if (k < 0) { break; }
+    var st: int64 = at + k + 8;
+    var e: int64 = st;
+    while (e < (int64)text.length && text[e] >= '0' && text[e] <= '9') { e = e + 1; }
+    dropped = dropped + str_to_i64_or(str_slice(text, st, e - st), 0);
+    at = e;
+  }
+  println("drop queue: {got} written, {dropped} dropped");
+  t_ok("written {got} + dropped {dropped} == {total}", got + dropped == total);
+  return t_done("async");
+}

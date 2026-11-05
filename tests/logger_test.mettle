@@ -1,0 +1,76 @@
+// Loggers, the global filter, context fields, callbacks and the memory sink.
+import "std/conv";
+import "log/log";
+import "tutil";
+
+var g_seen: int32 = 0;
+var g_last_level: int32 = 0;
+var g_last_fields: int32 = 0;
+
+fn on_rec(ctx: rawptr, r: LogRecord*) -> int32 {
+  g_seen = g_seen + 1;
+  g_last_level = r->level;
+  g_last_fields = r->n_ctx + r->n_fields;
+  return 0;
+}
+
+fn main() -> int32 {
+  var mem: LogSink* = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  t_ok("add mem", log_add_sink(mem));
+  t_ok("add cb", log_add_sink(log_sink_callback(&on_rec, (rawptr)0)));
+  t_ok("filter ok", log_set_filter("info,db=debug,noisy=off") == 0);
+
+  var app: LogLogger* = log_logger("app");
+  var db: LogLogger* = log_logger("db/pool");
+  var noisy: LogLogger* = log_logger("noisy");
+  t_ok("app info on", log_on(app, LOG_INFO));
+  t_ok("app debug off", !log_on(app, LOG_DEBUG));
+  t_ok("db debug on", log_on(db, LOG_DEBUG));
+  t_ok("db trace off", !log_on(db, LOG_TRACE));
+  t_ok("noisy fatal off", !log_on(noisy, LOG_FATAL));
+
+  log_info(app, "one", log_int("n", 1));
+  log_debug(app, "hidden");
+  log_debug(db, "two");
+  log_error(noisy, "hidden too");
+  t_eq("mem text", log_sink_text(mem), "level=info target=app msg=one n=1\nlevel=debug target=db/pool msg=two\n");
+  t_ok("callback count", g_seen == 2);
+  t_ok("callback level", g_last_level == LOG_DEBUG);
+
+  // Changing the filter reaches loggers that cached the old level.
+  log_set_filter("warn");
+  t_ok("db debug now off", !log_on(db, LOG_DEBUG));
+  t_ok("app warn on", log_on(app, LOG_WARN));
+  t_ok("noisy on again", log_on(noisy, LOG_ERROR));
+  t_ok("bad directive count", log_set_filter("trace,x=nope") == 1);
+  t_ok("trace on", log_on(app, LOG_TRACE));
+
+  // Context fields.
+  log_sink_clear(mem);
+  var src: string = "req-" + "17";
+  var req: LogLogger* = log_with(app, log_str("req", src), log_int("user", 5));
+  src.chars[4] = (uint8)'X';    // the logger copied the value
+  var sub: LogLogger* = log_with(req, log_bool("retry", false));
+  log_info(sub, "done", log_dur("took", (int64)2000));
+  t_eq("ctx", log_sink_text(mem), "level=info target=app msg=done req=req-17 user=5 retry=false took=2us\n");
+  t_ok("callback fields", g_last_fields == 4);
+
+  // log_at and per-sink levels.
+  log_sink_clear(mem);
+  log_sink_level(mem, LOG_ERROR);
+  log_at(app, LOG_WARN, "below sink");
+  log_at(app, 19, "error2");
+  t_eq("sink level", log_sink_text(mem), "level=error target=app msg=error2\n");
+
+  // Root logger.
+  log_sink_level(mem, LOG_TRACE);
+  log_sink_clear(mem);
+  log_warn(log_root(), "rooted");
+  t_eq("root", log_sink_text(mem), "level=warn msg=rooted\n");
+
+  // Off disables everything.
+  log_set_filter("off");
+  t_ok("off", !log_on(app, LOG_FATAL));
+  log_shutdown();
+  return t_done("logger");
+}

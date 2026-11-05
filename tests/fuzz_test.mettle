@@ -1,0 +1,172 @@
+// Random input: filters never crash, text and logfmt stay one line with no
+// raw control bytes, and JSON output is always one line of valid JSON (RFC
+// 8259 allows a raw DEL byte, so that one is not escaped there).
+import "std/mem";
+import "codec/core/buf";
+import "log/log";
+import "tutil";
+
+// ---- a small JSON checker (RFC 8259 grammar) --------------------------------
+
+fn ws(s: string, p: int64) -> int64 {
+  var i: int64 = p;
+  while (i < (int64)s.length && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) { i = i + 1; }
+  return i;
+}
+
+fn jstring(s: string, p: int64) -> int64 {
+  if (p >= (int64)s.length || s[p] != '"') { return -1; }
+  var i: int64 = p + 1;
+  while (i < (int64)s.length) {
+    var c: int32 = (int32)(uint8)s[i];
+    if (c == 34) { return i + 1; }
+    if (c < 32) { return -1; }
+    if (c == 92) {
+      i = i + 1;
+      if (i >= (int64)s.length) { return -1; }
+      var e: char = s[i];
+      if (e == 'u') {
+        for k in 1..5 {
+          if (i + k >= (int64)s.length) { return -1; }
+          var h: char = s[i + k];
+          var hex: bool = (h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F');
+          if (!hex) { return -1; }
+        }
+        i = i + 4;
+      } else if (e != '"' && e != '\\' && e != '/' && e != 'b' && e != 'f' && e != 'n' && e != 'r' && e != 't') {
+        return -1;
+      }
+    }
+    i = i + 1;
+  }
+  return -1;
+}
+
+fn jvalue(s: string, p0: int64, depth: int32) -> int64 {
+  if (depth > 64) { return -1; }
+  var p: int64 = ws(s, p0);
+  if (p >= (int64)s.length) { return -1; }
+  var c: char = s[p];
+  if (c == '"') { return jstring(s, p); }
+  if (c == '{' || c == '[') {
+    var close: char = ']';
+    if (c == '{') { close = '}'; }
+    p = ws(s, p + 1);
+    if (p < (int64)s.length && s[p] == close) { return p + 1; }
+    while (true) {
+      if (c == '{') {
+        p = jstring(s, ws(s, p));
+        if (p < 0) { return -1; }
+        p = ws(s, p);
+        if (p >= (int64)s.length || s[p] != ':') { return -1; }
+        p = p + 1;
+      }
+      p = jvalue(s, p, depth + 1);
+      if (p < 0) { return -1; }
+      p = ws(s, p);
+      if (p >= (int64)s.length) { return -1; }
+      if (s[p] == close) { return p + 1; }
+      if (s[p] != ',') { return -1; }
+      p = p + 1;
+    }
+  }
+  var st: int64 = p;
+  while (p < (int64)s.length) {
+    var d: char = s[p];
+    var ok: bool = (d >= '0' && d <= '9') || d == '-' || d == '+' || d == '.' || d == 'e' || d == 'E' || (d >= 'a' && d <= 'z');
+    if (!ok) { break; }
+    p = p + 1;
+  }
+  if (p == st) { return -1; }
+  return p;
+}
+
+fn json_ok(s: string) -> bool {
+  var p: int64 = jvalue(s, 0, 0);
+  if (p < 0) { return false; }
+  return p == (int64)s.length - 1 && s[p] == '\n';
+}
+
+// ---- random input -----------------------------------------------------------
+
+fn rbytes(mem: uint8*, max: int64) -> string {
+  var n: int64 = (int64)(t_rand() % (uint64)max);
+  for i: int64 in 0..n {
+    var r: uint64 = t_rand() % (uint64)10;
+    if (r < 6) { mem[i] = (uint8)(97 + (int32)(t_rand() % (uint64)26)); }
+    else { mem[i] = (uint8)(t_rand() % (uint64)256); }
+  }
+  var s: string;
+  s.chars = mem;
+  s.length = (uint64)n;
+  return s;
+}
+
+fn one_line(s: string, del_ok: bool) -> bool {
+  if (s.length == 0 || s[s.length - 1] != '\n') { return false; }
+  for i in 0..s.length - 1 {
+    var c: int32 = (int32)(uint8)s[i];
+    if (c < 32 || (c == 127 && !del_ok)) { return false; }
+  }
+  return true;
+}
+
+fn main() -> int32 {
+  var m1: uint8[300];
+  var m2: uint8[40];
+  var m3: uint8[200];
+  var m4: uint8[40];
+  var alpha: string = "abc=,/:. \tinfowarnoff123";
+  var bad_lines: int32 = 0;
+  var bad_json: int32 = 0;
+  for round in 0..20000 {
+    // Filter specs from a small alphabet and from raw bytes.
+    var sp: uint8[48];
+    var n: int64 = (int64)(t_rand() % (uint64)48);
+    for i: int64 in 0..n { sp[i] = (uint8)alpha[(int64)(t_rand() % (uint64)alpha.length)]; }
+    var spec: string;
+    spec.chars = &sp[0];
+    spec.length = (uint64)n;
+    var f: LogFilter;
+    log_filter_parse(spec, &f);
+    log_filter_level(&f, rbytes(&m4[0], 40));
+    log_filter_free(&f);
+    log_filter_parse(rbytes(&m4[0], 40), &f);
+    log_filter_free(&f);
+
+    var fs: LogField[3];
+    fs[0] = log_str(rbytes(&m2[0], 40), rbytes(&m3[0], 200));
+    fs[1] = log_int(rbytes(&m4[0], 10), (int64)t_rand());
+    fs[2] = log_f64("x", (float64)(int64)t_rand() / 7.0);
+    var r: LogRecord;
+    r.level = 1 + (int32)(t_rand() % (uint64)25);
+    r.target = rbytes(&m4[0], 20);
+    r.msg = rbytes(&m1[0], 300);
+    r.fields = &fs[0];
+    r.n_fields = 3;
+    r.time_ns = (int64)(t_rand() % (uint64)4102444800000000000);
+    if (!one_line(t_fmt(LOG_FMT_TEXT, LOG_THREAD, &r), false)) { bad_lines = bad_lines + 1; }
+    if (!one_line(t_fmt(LOG_FMT_LOGFMT, LOG_THREAD, &r), false)) { bad_lines = bad_lines + 1; }
+    var j: string = t_fmt(LOG_FMT_JSON, 0, &r);
+    if (!json_ok(j) || !one_line(j, true)) {
+      bad_json = bad_json + 1;
+      if (bad_json < 3) { t_eq("json sample", j, ""); }
+    }
+    t_fmt(LOG_FMT_SYSLOG, 0, &r);
+    t_fmt(LOG_FMT_RFC5424, 0, &r);
+    t_fmt(LOG_FMT_JOURNAL, 0, &r);
+  }
+  t_ok("text and logfmt one line ({bad_lines} bad)", bad_lines == 0);
+  t_ok("json valid ({bad_json} bad)", bad_json == 0);
+
+  // A record larger than the stack buffer goes through the heap path.
+  var mem: LogSink* = log_sink_memory(LOG_FMT_LOGFMT, LOG_NO_TIME);
+  log_add_sink(mem);
+  log_set_filter("trace");
+  var big: string = "";
+  for i in 0..500 { big = big + "0123456789"; }
+  log_info(log_logger("big"), "m", log_str("v", big));
+  t_ok("big record", log_sink_text(mem).length == 5031);
+  log_shutdown();
+  return t_done("fuzz");
+}

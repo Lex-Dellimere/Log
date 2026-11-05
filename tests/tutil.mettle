@@ -1,0 +1,63 @@
+// Shared helpers for the test programs.
+import "std/io";
+import "std/mem";
+import "std/conv";
+import "codec/core/buf";
+import "log/log";
+
+var g_checks: int64 = 0;
+var g_fails: int64 = 0;
+
+export fn t_ok(name: string, cond: bool) {
+  g_checks = g_checks + 1;
+  if (!cond) {
+    g_fails = g_fails + 1;
+    if (g_fails <= 200) { println("FAIL {name}"); }
+  }
+}
+
+// Checks got == want and prints both when they differ.
+export fn t_eq(name: string, got: string, want: string) {
+  var same: bool = got == want;
+  t_ok(name, same);
+  if (!same && g_fails <= 200) {
+    println("  got:  [{got}]");
+    println("  want: [{want}]");
+  }
+}
+
+export fn t_done(what: string) -> int32 {
+  println("{what}: {g_checks - g_fails} of {g_checks} checks passed");
+  if (g_fails > 0) { return 1; }
+  return 0;
+}
+
+// Formats one record with no time into a fresh string (never freed).
+export fn t_fmt(kind: int32, flags: int32, r: LogRecord*) -> string {
+  var f: LogFormat;
+  f.kind = kind;
+  f.flags = flags | LOG_NO_TIME;
+  f.tag = "app";
+  f.facility = LOG_FAC_USER;
+  f.pid = 42;
+  f.host = "box";
+  var b: CodecBuf;
+  codec_buf_init(&b, 64);
+  log_format(&f, r, &b);
+  return codec_buf_take(&b);
+}
+
+export fn t_count(s: string, c: char) -> int64 {
+  var n: int64 = 0;
+  for x in s { if (x == c) { n = n + 1; } }
+  return n;
+}
+
+// A simple repeatable random generator (xorshift64*).
+var g_rng: uint64 = 88172645463325252;
+export fn t_rand() -> uint64 {
+  g_rng = g_rng ^ (g_rng >> 12);
+  g_rng = g_rng ^ (g_rng << 25);
+  g_rng = g_rng ^ (g_rng >> 27);
+  return g_rng * 2685821657736338717;
+}

@@ -1,0 +1,17 @@
+// hello: logs a few records. Try:
+//   METTLE_LOG=debug ./hello
+//   METTLE_LOG=warn,app/db=trace METTLE_LOG_FORMAT=json ./hello
+import "log/log";
+
+fn main() -> int32 {
+  var app: LogLogger* = log_logger("app");
+  var db: LogLogger* = log_logger("app/db");
+  log_info(app, "starting", log_str("version", "0.1.0"), log_int("workers", 4));
+  log_debug(app, "config read", log_str("path", "/etc/app.conf"));
+  var q: LogLogger* = log_with(db, log_str("table", "users"));
+  log_trace(q, "query planned", log_int("rows", 120));
+  log_warn(q, "slow query", log_dur("took", (int64)1500000), log_f64("load", 0.75));
+  log_error(app, "request failed", log_err("connection reset"), log_bool("retry", true));
+  log_shutdown();
+  return 0;
+}

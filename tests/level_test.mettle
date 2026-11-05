@@ -1,0 +1,37 @@
+// Level numbers, names, parsing and the syslog mapping.
+import "log/log";
+import "tutil";
+
+fn main() -> int32 {
+  t_ok("order", LOG_TRACE < LOG_DEBUG && LOG_DEBUG < LOG_INFO && LOG_INFO < LOG_WARN && LOG_WARN < LOG_ERROR && LOG_ERROR < LOG_FATAL && LOG_FATAL < LOG_OFF);
+  // OpenTelemetry SeverityNumber values.
+  t_ok("otel numbers", LOG_TRACE == 1 && LOG_DEBUG == 5 && LOG_INFO == 9 && LOG_WARN == 13 && LOG_ERROR == 17 && LOG_FATAL == 21);
+  t_eq("name info", log_level_name(LOG_INFO), "INFO");
+  t_eq("name info3", log_level_name(11), "INFO");
+  t_eq("name fatal4", log_level_name(24), "FATAL");
+  t_eq("key warn", log_level_key(LOG_WARN), "warn");
+  t_eq("key off", log_level_key(LOG_OFF), "off");
+  t_ok("parse trace", log_level_parse("trace") == LOG_TRACE);
+  t_ok("parse DEBUG", log_level_parse("DEBUG") == LOG_DEBUG);
+  t_ok("parse Info", log_level_parse("Info") == LOG_INFO);
+  t_ok("parse warning", log_level_parse("warning") == LOG_WARN);
+  t_ok("parse err", log_level_parse("err") == LOG_ERROR);
+  t_ok("parse critical", log_level_parse("critical") == LOG_FATAL);
+  t_ok("parse off", log_level_parse("off") == LOG_OFF);
+  t_ok("parse none", log_level_parse("none") == LOG_OFF);
+  t_ok("parse 10", log_level_parse("10") == 10);
+  t_ok("parse 0", log_level_parse("0") < 0);
+  t_ok("parse 26", log_level_parse("26") < 0);
+  t_ok("parse 100", log_level_parse("100") < 0);
+  t_ok("parse empty", log_level_parse("") < 0);
+  t_ok("parse junk", log_level_parse("verbose") < 0);
+  t_ok("parse 1x", log_level_parse("1x") < 0);
+  // RFC 5424 severities.
+  t_ok("sys fatal", log_level_syslog(LOG_FATAL) == 2);
+  t_ok("sys error", log_level_syslog(LOG_ERROR) == 3);
+  t_ok("sys warn", log_level_syslog(LOG_WARN) == 4);
+  t_ok("sys info", log_level_syslog(LOG_INFO) == 6);
+  t_ok("sys debug", log_level_syslog(LOG_DEBUG) == 7);
+  t_ok("sys trace", log_level_syslog(LOG_TRACE) == 7);
+  return t_done("level");
+}

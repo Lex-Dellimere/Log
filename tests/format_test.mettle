@@ -1,0 +1,117 @@
+// Exact output of every format, escaping, and the record layout.
+import "std/mem";
+import "std/time";
+import "codec/core/buf";
+import "log/log";
+import "tutil";
+
+fn rec(level: int32, target: string, msg: string, fs: LogField[..]) -> LogRecord {
+  var r: LogRecord;
+  r.level = level;
+  r.target = target;
+  r.msg = msg;
+  r.fields = fs.data;
+  r.n_fields = (int32)fs.length;
+  r.time_ns = (int64)1762336381 * (int64)1000000000 + (int64)123456789;
+  r.thread = 7;
+  return r;
+}
+
+fn main() -> int32 {
+  var fs: LogField[6];
+  fs[0] = log_str("peer", "10.0.0.2");
+  fs[1] = log_int("port", -443);
+  fs[2] = log_bool("tls", true);
+  fs[3] = log_f64("load", 0.5);
+  fs[4] = log_uint("big", (uint64)18446744073709551615);
+  fs[5] = log_dur("took", (int64)1500000);
+  var r: LogRecord = rec(LOG_INFO, "net/http", "connected", fs);
+
+  t_eq("text", t_fmt(LOG_FMT_TEXT, 0, &r),
+    " INFO net/http: connected peer=10.0.0.2 port=-443 tls=true load=0.5 big=18446744073709551615 took=1.5ms\n");
+  t_eq("logfmt", t_fmt(LOG_FMT_LOGFMT, 0, &r),
+    "level=info target=net/http msg=connected peer=10.0.0.2 port=-443 tls=true load=0.5 big=18446744073709551615 took=1.5ms\n");
+  t_eq("json", t_fmt(LOG_FMT_JSON, 0, &r),
+    "{{\"level\":\"info\",\"target\":\"net/http\",\"msg\":\"connected\",\"peer\":\"10.0.0.2\",\"port\":-443,\"tls\":true,\"load\":0.5,\"big\":18446744073709551615,\"took\":1500000}\n");
+  t_eq("syslog", t_fmt(LOG_FMT_SYSLOG, 0, &r),
+    "<14>app[42]: connected peer=10.0.0.2 port=-443 tls=true load=0.5 big=18446744073709551615 took=1.5ms");
+  t_eq("rfc5424", t_fmt(LOG_FMT_RFC5424, 0, &r),
+    "<14>1 2025-11-05T09:53:01.123456Z box app 42 net/http - connected peer=10.0.0.2 port=-443 tls=true load=0.5 big=18446744073709551615 took=1.5ms");
+  t_eq("journal", t_fmt(LOG_FMT_JOURNAL, 0, &r),
+    "PRIORITY=6\nSYSLOG_IDENTIFIER=app\nTARGET=net/http\nMESSAGE=connected\nPEER=10.0.0.2\nPORT=-443\nTLS=true\nLOAD=0.5\nBIG=18446744073709551615\nTOOK=1.5ms\n");
+
+  // Time, thread and target flags.
+  var f: LogFormat;
+  f.kind = LOG_FMT_LOGFMT;
+  f.flags = LOG_THREAD | LOG_NO_TARGET;
+  var b: CodecBuf;
+  codec_buf_init(&b, 64);
+  var r2: LogRecord = rec(LOG_WARN, "x", "m");
+  log_format(&f, &r2, &b);
+  t_eq("logfmt time thread", codec_buf_view(&b), "time=2025-11-05T09:53:01.123456Z level=warn thread=7 msg=m\n");
+  codec_buf_clear(&b);
+  f.kind = LOG_FMT_TEXT;
+  f.flags = 0;
+  log_format(&f, &r2, &b);
+  t_eq("text time", codec_buf_view(&b), "2025-11-05T09:53:01.123456Z  WARN x: m\n");
+  codec_buf_free(&b);
+
+  // Escaping: one record is one line, whatever is in it.
+  var bad: LogRecord = rec(LOG_ERROR, "t", "line1\nline2\\x", log_str("k ey=", "a \"b\"\\\n"), log_str("e", ""));
+  t_eq("text escape", t_fmt(LOG_FMT_TEXT, 0, &bad),
+    "ERROR t: line1\\nline2\\x k_ey_=\"a \\\"b\\\"\\\\\\n\" e=\"\"\n");
+  t_eq("logfmt escape", t_fmt(LOG_FMT_LOGFMT, 0, &bad),
+    "level=error target=t msg=\"line1\\nline2\\\\x\" k_ey_=\"a \\\"b\\\"\\\\\\n\" e=\"\"\n");
+  t_eq("json escape", t_fmt(LOG_FMT_JSON, 0, &bad),
+    "{{\"level\":\"error\",\"target\":\"t\",\"msg\":\"line1\\nline2\\\\x\",\"k ey=\":\"a \\\"b\\\"\\\\\\n\",\"e\":\"\"}\n");
+  // Control bytes become \u00XX.
+  var cb: uint8[3];
+  cb[0] = (uint8)65; cb[1] = (uint8)27; cb[2] = (uint8)66;
+  var ctl: string;
+  ctl.chars = &cb[0];
+  ctl.length = 3;
+  var rc: LogRecord = rec(LOG_INFO, "", ctl);
+  t_eq("ctl text", t_fmt(LOG_FMT_TEXT, 0, &rc), " INFO A\\u001bB\n");
+  // Journald: a value with a newline uses the binary form.
+  var rj: LogRecord = rec(LOG_DEBUG, "", "a\nb", log_str("9x", "v"));
+  var j: string = t_fmt(LOG_FMT_JOURNAL, 0, &rj);
+  t_ok("journal binary len", j.length == 11 + 22 + 8 + 8 + 3 + 1 + 7);
+  t_ok("journal binary prefix", str_starts_with(j, "PRIORITY=7\nSYSLOG_IDENTIFIER=app\nMESSAGE\n"));
+  t_ok("journal binary size byte", (int32)(uint8)j[41] == 3);
+  t_ok("journal key fix", str_ends_with(j, "F_9X=v\n"));
+
+  // Special floats.
+  var zero: float64 = 0.0;
+  var rf: LogRecord = rec(LOG_INFO, "", "f", log_f64("n", zero / zero), log_f64("p", 1.0 / zero), log_f64("m", -1.0 / zero));
+  t_eq("text floats", t_fmt(LOG_FMT_TEXT, 0, &rf), " INFO f n=NaN p=+Inf m=-Inf\n");
+  t_eq("json floats", t_fmt(LOG_FMT_JSON, 0, &rf), "{{\"level\":\"info\",\"msg\":\"f\",\"n\":null,\"p\":null,\"m\":null}\n");
+
+  // Context fields come before call fields.
+  var cx: LogField[1];
+  cx[0] = log_str("req", "r1");
+  var rx: LogRecord = rec(LOG_INFO, "", "c", log_int("n", 1));
+  rx.ctx = &cx[0];
+  rx.n_ctx = 1;
+  t_eq("ctx order", t_fmt(LOG_FMT_LOGFMT, 0, &rx), "level=info msg=c req=r1 n=1\n");
+  // The fast time formatter agrees with std/datetime over a wide range.
+  var tb: CodecBuf;
+  codec_buf_init(&tb, 64);
+  var tbad: int32 = 0;
+  var ns: int64 = (int64)-62135596800 * (int64)1000000000;   // 0001-01-01
+  while (ns < (int64)253402300799 * (int64)1000000000) {      // 9999-12-31
+    codec_buf_clear(&tb);
+    log_put_time(&tb, ns);
+    var want: uint8[48];
+    var n: int64 = time_format_iso8601(time_utc(ns), 6, &want[0], 48);
+    var w: string;
+    w.chars = &want[0];
+    w.length = (uint64)n;
+    if (codec_buf_view(&tb) != w) { tbad = tbad + 1; }
+    ns = ns + (int64)86399123457 * (int64)7919 + (int64)t_rand() % (int64)1000000000;
+  }
+  t_ok("time formatter matches std ({tbad} tbad)", tbad == 0);
+  codec_buf_clear(&tb);
+  log_put_time(&tb, (int64)-1);
+  t_eq("time before epoch", codec_buf_view(&tb), "1969-12-31T23:59:59.999999Z");
+  return t_done("format");
+}

@@ -1,0 +1,51 @@
+// RUST_LOG-style filters: env_logger's rules.
+import "log/log";
+import "tutil";
+
+fn lv(spec: string, target: string) -> int32 {
+  var f: LogFilter;
+  log_filter_parse(spec, &f);
+  var l: int32 = log_filter_level(&f, target);
+  log_filter_free(&f);
+  return l;
+}
+
+fn main() -> int32 {
+  t_ok("empty is info", lv("", "x") == LOG_INFO);
+  t_ok("bare level", lv("debug", "x") == LOG_DEBUG);
+  t_ok("target level", lv("net=trace", "net") == LOG_TRACE);
+  t_ok("other target default", lv("net=trace", "db") == LOG_INFO);
+  t_ok("child slash", lv("net=trace", "net/http") == LOG_TRACE);
+  t_ok("child colons", lv("net=trace", "net::tcp") == LOG_TRACE);
+  t_ok("child dot", lv("net=trace", "net.udp") == LOG_TRACE);
+  t_ok("not a prefix word", lv("net=trace", "network") == LOG_INFO);
+  t_ok("longest wins", lv("net=warn,net/http=trace", "net/http/client") == LOG_TRACE);
+  t_ok("longest wins any order", lv("net/http=trace,net=warn", "net/http") == LOG_TRACE);
+  t_ok("shorter for sibling", lv("net=warn,net/http=trace", "net/tcp") == LOG_WARN);
+  t_ok("target alone is all", lv("alph", "alph/actor") == LOG_TRACE);
+  t_ok("off", lv("info,db=off", "db") == LOG_OFF);
+  t_ok("spaces", lv("  warn , db = debug ", "db") == LOG_DEBUG);
+  t_ok("spaces default", lv("  warn , db = debug ", "x") == LOG_WARN);
+  t_ok("last default wins", lv("debug,error", "x") == LOG_ERROR);
+  t_ok("number level", lv("x=3", "x") == 3);
+  t_ok("empty parts", lv(",,warn,,", "x") == LOG_WARN);
+
+  var f: LogFilter;
+  log_filter_parse("warn,a=bogus,=debug,b=trace", &f);
+  t_ok("bad counted", f.bad == 2);
+  t_ok("good kept", log_filter_level(&f, "b") == LOG_TRACE);
+  t_ok("floor", f.floor == LOG_TRACE);
+  log_filter_free(&f);
+  log_filter_parse("error,db=warn", &f);
+  t_ok("floor warn", f.floor == LOG_WARN);
+  log_filter_free(&f);
+  log_filter_parse("off", &f);
+  t_ok("floor off", f.floor == LOG_OFF);
+  log_filter_free(&f);
+
+  t_ok("match equal", log_target_matches("a/b", "a/b"));
+  t_ok("match child", log_target_matches("a", "a/b"));
+  t_ok("no match longer", !log_target_matches("a/b", "a"));
+  t_ok("empty directive matches all", log_target_matches("", "anything"));
+  return t_done("filter");
+}
